@@ -13,12 +13,14 @@ const GRID = [
   ["q3", "q4"],
 ];
 const HEADER_ALIASES = [
-  ["title", ["任务", "标题", "待办", "事项", "内容", "工作项", "task", "title", "name", "todo"]],
-  ["owner", ["主责人", "负责人", "责任人", "执行人", "owner", "assignee"]],
+  ["title", ["任务", "标题", "待办", "事项", "内容", "工作项", "工单名称", "待拍板事项", "task", "title", "name", "todo"]],
+  ["owner", ["主责人", "负责人", "责任人", "执行人", "建议牵头岗位", "牵头岗位", "owner", "assignee"]],
   ["status", ["完成情况", "状态", "进度", "status"]],
   ["blockers", ["难点", "阻碍", "阻塞", "备注", "问题", "blocker", "blockers", "notes"]],
   ["quadrant", ["象限", "分类", "quadrant"]],
 ];
+const ID_LABELS = new Set(["工单编号", "决策编号"]);
+const LINK_LABELS = new Set(["映射工单", "关联工单"]);
 const SAMPLES = [
   {
     id: "sample-complaint",
@@ -183,63 +185,271 @@ function isSeparatorRow(cells) {
   return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(String(cell).replace(/\s/g, "")));
 }
 
+function cleanRows(rows) {
+  return rows
+    .map((row) => (Array.isArray(row) ? row : [row]).map((cell) => String(cell ?? "").trim()))
+    .filter((row) => row.some((cell) => cell !== "") && !isSeparatorRow(row));
+}
+
+function normLabel(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "").replace(/[*：:]/g, "");
+}
+
+function knownStatus(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const s = raw.toLowerCase();
+  if (/未开始|未完成|待办|todo|pending|未处理|进行|doing|in progress|wip|处理中|已完成|完成|done|completed|closed/.test(s)) {
+    return normalizeStatus(raw);
+  }
+  return "";
+}
+
+function headerRank(cells) {
+  let score = headerScore(cells) * 3;
+  for (const cell of cells) {
+    const name = String(cell || "").trim();
+    const key = normLabel(name);
+    if (ID_LABELS.has(name) || LINK_LABELS.has(name)) score += 5;
+    if (HEADER_ALIASES[0][1].includes(key)) score += 4;
+  }
+  return score;
+}
+
+function isMatrixHeader(cells) {
+  const labels = cells
+    .map((cell) => String(cell || "").trim())
+    .filter((label) => label && label.length <= 24);
+  if (labels.length < 4) return false;
+  const counts = new Map();
+  labels.forEach((label) => {
+    const key = normLabel(label);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const repeatedKinds = [...counts.values()].filter((count) => count >= 2).length;
+  return repeatedKinds >= 2;
+}
+
+function isProseSheet(rows) {
+  if (rows.length < 3) return false;
+  const multi = rows.filter((row) => row.filter(Boolean).length >= 2).length;
+  const long = rows.filter((row) => row.join("").length > 80).length;
+  return multi >= rows.length * 0.6 && long >= rows.length * 0.5;
+}
+
+function findHeader(rows) {
+  const limit = Math.min(rows.length, 12);
+  let best = -1;
+  let bestScore = 0;
+  for (let i = 0; i < limit; i += 1) {
+    if (isMatrixHeader(rows[i])) return { matrix: true };
+    const score = headerRank(rows[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  if (best < 0 || bestScore < 3) return null;
+  return { index: best };
+}
+
+function rowRecord(headers, row) {
+  const fields = [];
+  const byLabel = new Map();
+  headers.forEach((label, index) => {
+    const name = String(label || "").trim();
+    const value = String(row[index] || "").trim();
+    if (!name || !value) return;
+    fields.push({ label: name, value });
+    if (!byLabel.has(normLabel(name))) byLabel.set(normLabel(name), { label: name, value });
+  });
+  const take = (aliases) => {
+    for (const alias of aliases) {
+      const found = byLabel.get(normLabel(alias));
+      if (found) return found;
+    }
+    return null;
+  };
+  const title = take(HEADER_ALIASES[0][1]);
+  const owner = take(HEADER_ALIASES[1][1]);
+  const status = take(HEADER_ALIASES[2][1]);
+  const blockers = take(HEADER_ALIASES[3][1]);
+  const quadrant = take(HEADER_ALIASES[4][1]);
+  const ids = [];
+  for (const label of ID_LABELS) {
+    const found = byLabel.get(normLabel(label));
+    if (found) ids.push(...extractRefs(found.value), found.value.trim());
+  }
+  const links = [];
+  for (const label of LINK_LABELS) {
+    const found = byLabel.get(normLabel(label));
+    if (found) links.push(...extractRefs(found.value));
+  }
+  const sortCell = byLabel.get(normLabel("象限内排序"));
+  const sort = sortCell && /^\d+$/.test(sortCell.value) ? Number(sortCell.value) : null;
+  return {
+    fields,
+    title: title?.value || "",
+    owner: owner?.value || "",
+    ownerLabel: owner?.label || "",
+    statusRaw: status?.value || "",
+    statusLabel: status?.label || "",
+    blockers: blockers?.value || "",
+    blockersLabel: blockers?.label || "",
+    quadrantText: quadrant?.value || "",
+    ids: [...new Set(ids.map((id) => id.toUpperCase()))],
+    links: [...new Set(links.map((id) => id.toUpperCase()))],
+    sort,
+    headers,
+  };
+}
+
+function extractRefs(value) {
+  return [...String(value || "").matchAll(/\b(?:WO|D)-\d+\b/gi)].map((match) => match[0].toUpperCase());
+}
+
+function workflowStatus(header, raw) {
+  if (!header) return "";
+  if (/完成情况|进度|^status$/i.test(header)) return knownStatus(raw) || normalizeStatus(raw);
+  return knownStatus(raw);
+}
+
+function taskFromRecords(records, fallbackQuadrant) {
+  const primary = records.slice().sort((a, b) => b.fields.length - a.fields.length)[0];
+  const quadrant = records.map((record) => quadrantFromText(record.quadrantText)).find(Boolean) || fallbackQuadrant || "q3";
+  const statusRaw = primary.statusRaw;
+  const workflow = workflowStatus(primary.statusLabel, statusRaw);
+  const groups = [];
+  for (const record of records) {
+    if (!record.fields.length) continue;
+    let group = groups.find((item) => item.name === record.sheetName);
+    if (!group) {
+      group = { name: record.sheetName || "清单", entries: [] };
+      groups.push(group);
+    }
+    group.entries.push({ fields: record.fields });
+  }
+  return {
+    title: primary.title,
+    owner: primary.owner,
+    ownerLabel: primary.ownerLabel,
+    showOwner: Boolean(primary.ownerLabel),
+    status: workflow || "未开始",
+    statusLabel: statusRaw && statusRaw !== workflow ? statusRaw : "",
+    showStatus: Boolean(workflow),
+    blockers: primary.blockers,
+    blockersLabel: primary.blockersLabel,
+    showBlockers: Boolean(primary.blockersLabel),
+    quadrant,
+    order: records.map((record) => record.sort).find((sort) => sort != null),
+    groups,
+  };
+}
+
 function tasksFromTable(rows, options = {}) {
-  const cleaned = rows
-    .map((row) => row.map((cell) => String(cell ?? "").trim()))
-    .filter((row) => row.some((cell) => cell !== ""));
-  const dataRows = cleaned.filter((row) => !isSeparatorRow(row));
+  const dataRows = cleanRows(rows);
   if (!dataRows.length) return [];
   const fallback = ["q1", "q2", "q3", "q4"].includes(options.defaultQuadrant) ? options.defaultQuadrant : "q3";
+  const groupName = options.groupName || "清单";
   let start = 0;
-  let col = { title: 0, owner: -1, status: -1, blockers: -1, quadrant: -1 };
+  let headers = null;
   if (options.scanHeader) {
-    let best = -1;
-    let bestScore = 0;
-    const limit = Math.min(dataRows.length, 8);
-    for (let i = 0; i < limit; i += 1) {
-      const score = headerScore(dataRows[i]);
-      if (score > bestScore) {
-        bestScore = score;
-        best = i;
-      }
-    }
-    if (best >= 0) {
-      const mapped = mapHeaders(dataRows[best]);
-      if (mapped) {
-        col = mapped;
-        start = best + 1;
-      }
+    const found = findHeader(dataRows);
+    if (found?.matrix) return [];
+    if (found?.index >= 0) {
+      headers = dataRows[found.index];
+      start = found.index + 1;
     }
   } else {
     const mapped = mapHeaders(dataRows[0]);
     if (mapped) {
-      col = mapped;
+      headers = dataRows[0];
       start = 1;
     }
   }
+  if (!headers && isProseSheet(dataRows)) return [];
+  const col = headers ? mapHeaders(headers) || { title: 0, owner: -1, status: -1, blockers: -1, quadrant: -1 } : { title: 0, owner: -1, status: -1, blockers: -1, quadrant: -1 };
   const out = [];
   for (let i = start; i < dataRows.length; i += 1) {
     const row = dataRows[i];
-    const title = (row[col.title] || "").trim();
+    const record = headers ? rowRecord(headers, row) : null;
+    const title = (record?.title || row[col.title] || "").trim();
     if (!title) continue;
+    const statusRaw = record?.statusRaw || "";
+    const workflow = record ? workflowStatus(record.statusLabel, statusRaw) : normalizeStatus("");
     out.push({
       title,
-      owner: col.owner >= 0 ? (row[col.owner] || "").trim() : "",
-      status: normalizeStatus(col.status >= 0 ? row[col.status] : ""),
-      blockers: col.blockers >= 0 ? (row[col.blockers] || "").trim() : "",
-      quadrant: quadrantFromText(col.quadrant >= 0 ? row[col.quadrant] : "") || fallback,
+      owner: record?.owner || (col.owner >= 0 ? row[col.owner] || "" : ""),
+      ownerLabel: record?.ownerLabel || "",
+      showOwner: record ? Boolean(record.ownerLabel) : true,
+      status: workflow || "未开始",
+      statusLabel: statusRaw && statusRaw !== workflow ? statusRaw : "",
+      showStatus: record ? Boolean(workflow) : true,
+      blockers: record?.blockers || (col.blockers >= 0 ? row[col.blockers] || "" : ""),
+      blockersLabel: record?.blockersLabel || "",
+      showBlockers: record ? Boolean(record.blockersLabel) : true,
+      quadrant: quadrantFromText(record?.quadrantText || (col.quadrant >= 0 ? row[col.quadrant] : "")) || fallback,
+      groups: record?.fields?.length ? [{ name: groupName, entries: [{ fields: record.fields }] }] : [],
     });
   }
   return out;
 }
 
 function tasksFromExcel(sheets) {
-  const out = [];
+  const bundled = new Map();
+  const loose = [];
+  const references = [];
   for (const sheet of sheets) {
-    const named = quadrantFromText(sheet.name);
-    out.push(...tasksFromTable(sheet.rows, { scanHeader: true, defaultQuadrant: named || "q3" }));
+    const rows = cleanRows(sheet.rows || []);
+    if (!rows.length) continue;
+    if (rows.slice(0, 40).some(isMatrixHeader)) continue;
+    const found = findHeader(rows);
+    if (found?.matrix) continue;
+    const banner = found ? rows.slice(0, found.index).map((row) => row.filter(Boolean).join(" ")).join(" ") : "";
+    const sheetQuadrant = quadrantFromText(banner) || quadrantFromText(sheet.name);
+    if (!found) {
+      if (isProseSheet(rows)) continue;
+      loose.push(...tasksFromTable(rows, { scanHeader: true, defaultQuadrant: sheetQuadrant || "q3", groupName: sheet.name || "清单" }));
+      continue;
+    }
+    const headers = rows[found.index];
+    const hasLink = headers.some((label) => LINK_LABELS.has(String(label || "").trim()));
+    const hasQuadrant = headers.some((label) => headerKey(label) === "quadrant");
+    const reference = hasLink && !hasQuadrant && !sheetQuadrant;
+    for (let i = found.index + 1; i < rows.length; i += 1) {
+      const record = rowRecord(headers, rows[i]);
+      if (!record.fields.length) continue;
+      record.sheetName = sheet.name || "清单";
+      record.fallbackQuadrant = sheetQuadrant;
+      if (reference) references.push(record);
+      else if (record.ids[0] && record.title) {
+        const key = record.ids.find((id) => /^WO-\d+$/i.test(id)) || record.ids[0];
+        if (!bundled.has(key)) bundled.set(key, []);
+        bundled.get(key).push(record);
+      } else if (record.title) loose.push(taskFromRecords([record], sheetQuadrant || "q3"));
+    }
   }
-  return out;
+  const tasks = [];
+  for (const [key, records] of bundled) {
+    const task = taskFromRecords(records, records[0].fallbackQuadrant || "q3");
+    if (!task.title) continue;
+    task.id = `wo-${key}`;
+    tasks.push(task);
+  }
+  for (const record of references) {
+    const targets = record.links.filter((id) => bundled.has(id));
+    for (const id of targets) {
+      const task = tasks.find((item) => item.id === `wo-${id}`);
+      if (!task) continue;
+      let group = task.groups.find((item) => item.name === record.sheetName);
+      if (!group) {
+        group = { name: record.sheetName, entries: [] };
+        task.groups.push(group);
+      }
+      group.entries.push({ fields: record.fields });
+    }
+  }
+  return tasks.concat(loose);
 }
 
 function excelErrorMessage(fileName, error) {
@@ -406,6 +616,22 @@ function safeId(value) {
   return crypto.randomUUID();
 }
 
+function sanitizeGroups(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 12).map((group) => {
+    const entries = Array.isArray(group?.entries) ? group.entries : [{ fields: group?.fields }];
+    return {
+      name: clampText(group?.name, 80).trim() || "清单",
+      entries: entries.slice(0, 40).map((entry) => ({
+        fields: (Array.isArray(entry?.fields) ? entry.fields : []).slice(0, 40).map((field) => ({
+          label: clampText(field?.label, 80).trim(),
+          value: clampText(field?.value, 8000).trim(),
+        })).filter((field) => field.label && field.value),
+      })).filter((entry) => entry.fields.length),
+    };
+  }).filter((group) => group.entries.length);
+}
+
 function sanitizeTask(raw) {
   if (!raw || typeof raw !== "object") return null;
   const title = clampText(raw.title, 500).trim();
@@ -413,14 +639,22 @@ function sanitizeTask(raw) {
   const quadrant = ["q1", "q2", "q3", "q4"].includes(raw.quadrant) ? raw.quadrant : "q3";
   const status = STATUSES.includes(raw.status) ? raw.status : "未开始";
   const order = Number.isFinite(Number(raw.order)) ? Number(raw.order) : 0;
+  const statusLabel = clampText(raw.statusLabel, 80).trim();
   return {
     id: safeId(raw.id),
     title,
-    owner: clampText(raw.owner, 120).trim(),
+    owner: clampText(raw.owner, 240).trim(),
+    ownerLabel: clampText(raw.ownerLabel, 40).trim(),
+    showOwner: raw.showOwner !== false,
     status,
-    blockers: clampText(raw.blockers, 2000).trim(),
+    statusLabel,
+    showStatus: raw.showStatus !== false,
+    blockers: clampText(raw.blockers, 4000).trim(),
+    blockersLabel: clampText(raw.blockersLabel, 40).trim(),
+    showBlockers: raw.showBlockers !== false,
     quadrant,
     order,
+    groups: sanitizeGroups(raw.groups),
   };
 }
 
@@ -487,13 +721,14 @@ function statusKey(status) {
 
 function cardNode(task) {
   const art = document.createElement("article");
+  const shownStatus = task.statusLabel || task.status;
   art.className = `card${task.status === "已完成" ? " is-done" : ""}`;
   art.dataset.id = task.id;
   art.tabIndex = 0;
   art.setAttribute("role", "listitem");
   art.setAttribute("aria-roledescription", "可拖动任务");
-  const bits = [task.title, task.status];
-  if (task.owner) bits.push(`主责人 ${task.owner}`);
+  const bits = [task.title, shownStatus];
+  if (task.owner) bits.push(`${task.ownerLabel || "主责人"} ${task.owner}`);
   if (task.blockers) bits.push("有难点");
   art.setAttribute("aria-label", bits.join("，"));
   art.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight Enter");
@@ -519,8 +754,8 @@ function cardNode(task) {
     meta.append(owner);
   }
   const status = document.createElement("span");
-  status.className = `status status-${statusKey(task.status)}`;
-  status.textContent = task.status;
+  status.className = `status status-${statusKey(shownStatus)}`;
+  status.textContent = shownStatus;
   meta.append(status);
   if (task.blockers) {
     const flag = document.createElement("span");
@@ -584,13 +819,20 @@ function addTasks(items) {
     const title = clampText(item.title || "", 500).trim();
     if (!title) continue;
     const task = {
-      id: crypto.randomUUID(),
+      id: safeId(item.id) || crypto.randomUUID(),
       title,
-      owner: clampText(item.owner || "", 120).trim(),
+      owner: clampText(item.owner || "", 240).trim(),
+      ownerLabel: clampText(item.ownerLabel || "", 40).trim(),
+      showOwner: item.showOwner !== false,
       status: STATUSES.includes(item.status) ? item.status : normalizeStatus(item.status),
-      blockers: clampText(item.blockers || "", 2000).trim(),
+      statusLabel: clampText(item.statusLabel || "", 80).trim(),
+      showStatus: item.showStatus !== false,
+      blockers: clampText(item.blockers || "", 4000).trim(),
+      blockersLabel: clampText(item.blockersLabel || "", 40).trim(),
+      showBlockers: item.showBlockers !== false,
       quadrant,
-      order: nextOrder(quadrant),
+      order: Number.isFinite(Number(item.order)) ? Number(item.order) : nextOrder(quadrant),
+      groups: sanitizeGroups(item.groups),
     };
     tasks.push(task);
     created.push(task);
@@ -673,9 +915,12 @@ function updateTask(id, patch) {
     const title = clampText(patch.title, 500).trim();
     if (title) task.title = title;
   }
-  if ("owner" in patch) task.owner = clampText(patch.owner, 120).trim();
-  if ("status" in patch && STATUSES.includes(patch.status)) task.status = patch.status;
-  if ("blockers" in patch) task.blockers = clampText(patch.blockers, 2000).trim();
+  if ("owner" in patch) task.owner = clampText(patch.owner, 240).trim();
+  if ("status" in patch && STATUSES.includes(patch.status)) {
+    task.status = patch.status;
+    task.statusLabel = "";
+  }
+  if ("blockers" in patch) task.blockers = clampText(patch.blockers, 4000).trim();
   save();
   const card = document.querySelector(`#matrix .card[data-id="${CSS.escape(id)}"]`);
   if (card) card.replaceWith(cardNode(task));
@@ -684,6 +929,32 @@ function updateTask(id, patch) {
 
 let filling = false;
 
+function renderGroups(task) {
+  const host = document.getElementById("sheet-groups");
+  if (!host) return;
+  host.replaceChildren();
+  for (const group of task.groups || []) {
+    const section = document.createElement("section");
+    section.className = "sheet-group";
+    const heading = document.createElement("h3");
+    heading.textContent = group.name;
+    section.append(heading);
+    for (const entry of group.entries || []) {
+      const list = document.createElement("dl");
+      list.className = "sheet-fields";
+      for (const field of entry.fields || []) {
+        const label = document.createElement("dt");
+        label.textContent = field.label;
+        const value = document.createElement("dd");
+        value.textContent = field.value;
+        list.append(label, value);
+      }
+      section.append(list);
+    }
+    host.append(section);
+  }
+}
+
 function openDetail(id) {
   const task = tasks.find((item) => item.id === id);
   const dialog = document.getElementById("detail");
@@ -691,13 +962,20 @@ function openDetail(id) {
   openId = id;
   filling = true;
   document.getElementById("field-title").value = task.title;
+  document.getElementById("owner-label").textContent = task.ownerLabel || "主责人";
   document.getElementById("field-owner").value = task.owner;
-  document.getElementById("field-status").value = task.status;
+  document.getElementById("owner-field").hidden = task.showOwner === false;
+  document.getElementById("field-status").value = STATUSES.includes(task.status) ? task.status : "未开始";
+  document.getElementById("status-field").hidden = task.showStatus === false;
+  document.getElementById("blockers-label").textContent = task.blockersLabel || "难点";
   document.getElementById("field-blockers").value = task.blockers;
+  document.getElementById("blockers-field").hidden = task.showBlockers === false;
+  renderGroups(task);
   filling = false;
   syncDetailChrome();
   if (!dialog.open) dialog.showModal();
-  document.getElementById("field-owner").focus();
+  const focus = task.showOwner === false ? document.getElementById("field-title") : document.getElementById("field-owner");
+  focus.focus();
 }
 
 function bindInstant(id, key) {
@@ -1031,8 +1309,8 @@ function bindChrome() {
   document.getElementById("clear-board").addEventListener("click", async () => {
     if (!tasks.length) return;
     const ok = await askConfirm({
-      title: "清空看板",
-      body: "这台浏览器里保存的任务、象限和详情都会删除。",
+      title: "清空全部任务",
+      body: "所有象限里的任务和详情都会删除，并立刻从这台浏览器清掉。",
       confirmLabel: "确认清空",
     });
     if (!ok) return;
