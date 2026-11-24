@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="运营用四象限任务板：导入待办清单，按紧急和重要拖动分拣，并在这台浏览器里保存。" />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <title>四象限任务板</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip" href="#matrix">跳到看板</a>
+  <div class="priority-bar" aria-hidden="true"></div>
+  <div class="wrap">
+    <header class="site-header">
+      <div class="top">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">四</div>
+          <div>
+            <h1>四象限任务板</h1>
+            <p class="sub">运营待办按紧急、重要分开。紧急又重要的，先做。</p>
+          </div>
+        </div>
+        <p class="save-line"><span id="summary">还没有任务</span><span class="dot" aria-hidden="true">·</span><span id="save-state">修改会保存在这台浏览器</span></p>
+      </div>
+      <div class="toolbar">
+        <form id="add-form" class="add-form" autocomplete="off">
+          <label class="sr-only" for="new-title">新任务</label>
+          <input id="new-title" type="text" maxlength="500" placeholder="添加一条任务，回车放入「紧急重要」" autocomplete="off" enterkeyhint="done" spellcheck="false" />
+          <button type="submit" class="btn btn-primary">添加</button>
+        </form>
+        <div class="action-row">
+          <label class="btn" for="file-input">上传清单</label>
+          <input id="file-input" class="sr-only" type="file" accept=".txt,.csv,.md,.markdown,text/plain,text/csv,text/markdown" multiple />
+          <button type="button" class="btn" id="load-sample">载入示例</button>
+          <button type="button" class="btn" id="clear-board">清空</button>
+        </div>
+      </div>
+      <details class="help">
+        <summary>清单格式</summary>
+        <div class="help-body">
+          <ul>
+            <li>txt、md：一行一条。空行和以 # 开头的标题会跳过。<code>- [x]</code> 记为已完成。</li>
+            <li>csv 或 Markdown 表格：表头可用「任务」或「标题」、「主责人」、「完成情况」、「难点」，可选「象限」。</li>
+            <li>没有象限的任务先放进「重要不紧急」，再拖到别的格子。</li>
+            <li>编码用 UTF-8 或 GB18030，单个文件不超过 1MB。</li>
+          </ul>
+          <pre class="example">任务,主责人,完成情况,难点,象限
+补发超时订单,林可,进行中,仓库缺货,紧急重要</pre>
+        </div>
+      </details>
+      <p class="callout" id="callout">看板上还没有任务。上传 txt、csv 或 md 清单，或先载入一组运营示例。</p>
+    </header>
+
+    <main>
+      <div class="matrix" id="matrix" tabindex="-1">
+        <div class="corner" aria-hidden="true"></div>
+        <div class="axis axis-col" aria-hidden="true">重要</div>
+        <div class="axis axis-col" aria-hidden="true">不重要</div>
+
+        <div class="axis axis-row" aria-hidden="true">紧急</div>
+        <section class="quad q1" id="quad-q1" data-q="q1" aria-labelledby="h-q1 count-label-q1">
+          <header class="quad-head">
+            <div>
+              <p class="eyebrow">01 · 马上做</p>
+              <h2 id="h-q1">紧急重要</h2>
+            </div>
+            <span class="count" id="count-q1">0</span>
+            <span class="sr-only" id="count-label-q1">0 项</span>
+          </header>
+          <div class="list" id="list-q1" role="list"></div>
+          <p class="empty">拖到这里</p>
+        </section>
+        <section class="quad q2" id="quad-q2" data-q="q2" aria-labelledby="h-q2 count-label-q2">
+          <header class="quad-head">
+            <div>
+              <p class="eyebrow">02 · 尽快处理</p>
+              <h2 id="h-q2">紧急不重要</h2>
+            </div>
+            <span class="count" id="count-q2">0</span>
+            <span class="sr-only" id="count-label-q2">0 项</span>
+          </header>
+          <div class="list" id="list-q2" role="list"></div>
+          <p class="empty">拖到这里</p>
+        </section>
+
+        <div class="axis axis-row" aria-hidden="true">不紧急</div>
+        <section class="quad q3" id="quad-q3" data-q="q3" aria-labelledby="h-q3 count-label-q3">
+          <header class="quad-head">
+            <div>
+              <p class="eyebrow">03 · 排期推进</p>
+              <h2 id="h-q3">重要不紧急</h2>
+            </div>
+            <span class="count" id="count-q3">0</span>
+            <span class="sr-only" id="count-label-q3">0 项</span>
+          </header>
+          <div class="list" id="list-q3" role="list"></div>
+          <p class="empty">拖到这里</p>
+        </section>
+        <section class="quad q4" id="quad-q4" data-q="q4" aria-labelledby="h-q4 count-label-q4">
+          <header class="quad-head">
+            <div>
+              <p class="eyebrow">04 · 有空再看</p>
+              <h2 id="h-q4">不重要不紧急</h2>
+            </div>
+            <span class="count" id="count-q4">0</span>
+            <span class="sr-only" id="count-label-q4">0 项</span>
+          </header>
+          <div class="list" id="list-q4" role="list"></div>
+          <p class="empty">拖到这里</p>
+        </section>
+      </div>
+      <p class="footnote" id="dnd-help">任务、象限和详情只保存在这台浏览器，刷新还在。点任务或按 Enter 编辑主责人、完成情况和难点。选中任务后，上 / 下键调整顺序（到顶或到底会换行），左 / 右键移到旁边的象限。也可以把清单文件拖进页面。</p>
+    </main>
+  </div>
+
+  <dialog id="detail" aria-labelledby="detail-heading">
+    <form id="detail-form" autocomplete="off">
+      <div class="detail-top">
+        <div>
+          <p class="eyebrow" id="detail-kicker">任务详情</p>
+          <h2 id="detail-heading">任务详情</h2>
+        </div>
+        <button type="button" class="btn" id="close-detail">关闭</button>
+      </div>
+      <p class="detail-note">改完即保存，不用再点保存。</p>
+      <label class="field">
+        <span>任务</span>
+        <input id="field-title" type="text" maxlength="500" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="field">
+        <span>主责人</span>
+        <input id="field-owner" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="姓名或岗位" />
+      </label>
+      <label class="field">
+        <span>完成情况</span>
+        <select id="field-status">
+          <option>未开始</option>
+          <option>进行中</option>
+          <option>已完成</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>难点</span>
+        <textarea id="field-blockers" maxlength="2000" spellcheck="false" placeholder="卡住这件事的原因，例如缺数据、等人确认、系统限制"></textarea>
+      </label>
+      <div class="move-block">
+        <p id="move-label">移到象限</p>
+        <div class="move-grid" role="group" aria-labelledby="move-label">
+          <button type="button" data-move="q1">紧急重要</button>
+          <button type="button" data-move="q2">紧急不重要</button>
+          <button type="button" data-move="q3">重要不紧急</button>
+          <button type="button" data-move="q4">不重要不紧急</button>
+        </div>
+        <div class="nudge-row">
+          <button type="button" class="btn" id="nudge-up">在本象限上移</button>
+          <button type="button" class="btn" id="nudge-down">在本象限下移</button>
+        </div>
+      </div>
+      <button type="button" class="btn btn-danger-text" id="delete-task">删除任务</button>
+    </form>
+  </dialog>
+
+  <dialog id="confirm" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">请确认</h2>
+    <p id="confirm-body"></p>
+    <div class="confirm-actions">
+      <button type="button" class="btn" id="confirm-no">取消</button>
+      <button type="button" class="btn btn-danger" id="confirm-yes">确认</button>
+    </div>
+  </dialog>
+
+  <div id="live" class="sr-only" aria-live="polite"></div>
+  <div id="toasts" aria-hidden="true"></div>
+  <div class="file-overlay" aria-hidden="true">松开以导入清单</div>
+  <noscript>
+    <p class="callout noscript">需要启用 JavaScript 才能使用这块看板。</p>
+  </noscript>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
