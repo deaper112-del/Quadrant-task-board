@@ -728,7 +728,7 @@ function cardNode(task) {
   art.setAttribute("role", "listitem");
   art.setAttribute("aria-roledescription", "可拖动任务");
   const bits = [task.title, shownStatus];
-  if (task.owner) bits.push(`${task.ownerLabel || "主责人"} ${task.owner}`);
+  if (task.owner) bits.push(`分配 ${task.owner}`);
   if (task.blockers) bits.push("有难点");
   art.setAttribute("aria-label", bits.join("，"));
   art.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight Enter");
@@ -955,6 +955,22 @@ function renderGroups(task) {
   }
 }
 
+function syncStatusSelect(task) {
+  const select = document.getElementById("field-status");
+  for (const option of [...select.querySelectorAll("option[data-imported]")]) option.remove();
+  const imported = task.statusLabel && !STATUSES.includes(task.statusLabel) ? task.statusLabel : "";
+  if (imported) {
+    const option = document.createElement("option");
+    option.value = imported;
+    option.textContent = imported;
+    option.dataset.imported = "1";
+    select.insertBefore(option, select.firstChild);
+    select.value = imported;
+    return;
+  }
+  select.value = STATUSES.includes(task.status) ? task.status : "未开始";
+}
+
 function openDetail(id) {
   const task = tasks.find((item) => item.id === id);
   const dialog = document.getElementById("detail");
@@ -962,11 +978,12 @@ function openDetail(id) {
   openId = id;
   filling = true;
   document.getElementById("field-title").value = task.title;
-  document.getElementById("owner-label").textContent = task.ownerLabel || "主责人";
+  document.getElementById("owner-label").textContent = "分配";
   document.getElementById("field-owner").value = task.owner;
-  document.getElementById("owner-field").hidden = task.showOwner === false;
-  document.getElementById("field-status").value = STATUSES.includes(task.status) ? task.status : "未开始";
-  document.getElementById("status-field").hidden = task.showStatus === false;
+  document.getElementById("owner-field").hidden = false;
+  document.getElementById("status-label").textContent = "完成进度";
+  document.getElementById("status-field").hidden = false;
+  syncStatusSelect(task);
   document.getElementById("blockers-label").textContent = task.blockersLabel || "难点";
   document.getElementById("field-blockers").value = task.blockers;
   document.getElementById("blockers-field").hidden = task.showBlockers === false;
@@ -974,8 +991,7 @@ function openDetail(id) {
   filling = false;
   syncDetailChrome();
   if (!dialog.open) dialog.showModal();
-  const focus = task.showOwner === false ? document.getElementById("field-title") : document.getElementById("field-owner");
-  focus.focus();
+  document.getElementById("field-owner").focus();
 }
 
 function bindInstant(id, key) {
@@ -1349,7 +1365,10 @@ function bindChrome() {
   bindInstant("field-blockers", "blockers");
   document.getElementById("field-status").addEventListener("change", (event) => {
     if (filling || !openId) return;
-    updateTask(openId, { status: event.target.value });
+    const value = event.target.value;
+    if (!STATUSES.includes(value)) return;
+    updateTask(openId, { status: value });
+    for (const option of [...event.target.querySelectorAll("option[data-imported]")]) option.remove();
   });
   document.querySelectorAll("[data-move]").forEach((btn) => {
     btn.addEventListener("click", () => {

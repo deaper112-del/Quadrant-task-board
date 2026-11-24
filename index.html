@@ -44,7 +44,7 @@
           <ul>
             <li>txt、md：一行一条。空行和以 # 开头的标题会跳过。<code>- [x]</code> 记为已完成。</li>
             <li>csv 或 Markdown 表格：表头可用「任务」或「标题」、「主责人」、「完成情况」、「难点」，可选「象限」。</li>
-            <li>Excel：xlsx、xlsm、xltx、xltm、xls。每个工作表都读。表头和 csv 相同；也认「工单名称」「建议牵头岗位」「状态」。表头上面的标题行会跳过。工作表名或「象限」列如果写着象限，任务就放进那一格。点开任务，会按工作表分组列出这份表自己的列。xlsb 请先另存为 xlsx。</li>
+            <li>Excel：xlsx、xlsm、xltx、xltm、xls。每个工作表都读。表头和 csv 相同；也认「工单名称」「建议牵头岗位」「状态」。表头上面的标题行会跳过。工作表名或「象限」列如果写着象限，任务就放进那一格。点开任务，会按工作表分组列出这份表自己的列。分配和完成进度可以再改，改完立即保存。xlsb 请先另存为 xlsx。</li>
             <li>没有象限的任务先放进「重要不紧急」，再拖到别的格子。</li>
             <li>编码用 UTF-8 或 GB18030，单个文件不超过 1MB。</li>
           </ul>
@@ -113,7 +113,7 @@
           <p class="empty">拖到这里</p>
         </section>
       </div>
-      <p class="footnote" id="dnd-help">任务、象限和详情只保存在这台浏览器，刷新还在。点「清空全部」会先确认，然后清掉所有象限和详情。「主责人」「完成情况」「难点」仍可改；表里的其他列按工作表分组显示。选中任务后，上 / 下键调整顺序（到顶或到底会换行），左 / 右键移到旁边的象限。也可以把清单文件拖进页面。</p>
+      <p class="footnote" id="dnd-help">任务、象限和详情只保存在这台浏览器，刷新还在。点「清空全部」会先确认，然后清掉所有象限和详情。点开任务可以改「分配」和「完成进度」，改完立即保存；表里的其他列按工作表分组显示。选中任务后，上 / 下键调整顺序（到顶或到底会换行），左 / 右键移到旁边的象限。也可以把清单文件拖进页面。</p>
     </main>
   </div>
 
@@ -132,11 +132,11 @@
         <input id="field-title" type="text" maxlength="500" autocomplete="off" spellcheck="false" />
       </label>
       <label class="field" id="owner-field">
-        <span id="owner-label">主责人</span>
-        <input id="field-owner" type="text" maxlength="240" autocomplete="off" spellcheck="false" placeholder="姓名或岗位" />
+        <span id="owner-label">分配</span>
+        <input id="field-owner" type="text" maxlength="240" autocomplete="off" spellcheck="false" placeholder="填写负责人姓名" />
       </label>
       <label class="field" id="status-field">
-        <span>完成情况</span>
+        <span id="status-label">完成进度</span>
         <select id="field-status">
           <option>未开始</option>
           <option>进行中</option>
