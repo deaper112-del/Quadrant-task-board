@@ -1,3 +1,5 @@
+import { ExcelFormatError, isExcelName, readExcelSheets } from "./excel.js";
+
 const STORAGE_KEY = "ops-quadrant-board-v1";
 const STATUSES = ["未开始", "进行中", "已完成"];
 const QUADRANTS = [
@@ -151,6 +153,18 @@ function headerKey(cell) {
   return null;
 }
 
+function headerScore(cells) {
+  const seen = new Set();
+  let score = 0;
+  for (const cell of cells) {
+    const key = headerKey(cell);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    score += 1;
+  }
+  return score;
+}
+
 function mapHeaders(cells) {
   const index = { title: -1, owner: -1, status: -1, blockers: -1, quadrant: -1 };
   let known = 0;
@@ -169,15 +183,40 @@ function isSeparatorRow(cells) {
   return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(String(cell).replace(/\s/g, "")));
 }
 
-function tasksFromTable(rows) {
+function tasksFromTable(rows, options = {}) {
   const cleaned = rows
     .map((row) => row.map((cell) => String(cell ?? "").trim()))
     .filter((row) => row.some((cell) => cell !== ""));
   const dataRows = cleaned.filter((row) => !isSeparatorRow(row));
   if (!dataRows.length) return [];
-  const mapped = mapHeaders(dataRows[0]);
-  const col = mapped || { title: 0, owner: -1, status: -1, blockers: -1, quadrant: -1 };
-  const start = mapped ? 1 : 0;
+  const fallback = ["q1", "q2", "q3", "q4"].includes(options.defaultQuadrant) ? options.defaultQuadrant : "q3";
+  let start = 0;
+  let col = { title: 0, owner: -1, status: -1, blockers: -1, quadrant: -1 };
+  if (options.scanHeader) {
+    let best = -1;
+    let bestScore = 0;
+    const limit = Math.min(dataRows.length, 8);
+    for (let i = 0; i < limit; i += 1) {
+      const score = headerScore(dataRows[i]);
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    if (best >= 0) {
+      const mapped = mapHeaders(dataRows[best]);
+      if (mapped) {
+        col = mapped;
+        start = best + 1;
+      }
+    }
+  } else {
+    const mapped = mapHeaders(dataRows[0]);
+    if (mapped) {
+      col = mapped;
+      start = 1;
+    }
+  }
   const out = [];
   for (let i = start; i < dataRows.length; i += 1) {
     const row = dataRows[i];
@@ -188,10 +227,28 @@ function tasksFromTable(rows) {
       owner: col.owner >= 0 ? (row[col.owner] || "").trim() : "",
       status: normalizeStatus(col.status >= 0 ? row[col.status] : ""),
       blockers: col.blockers >= 0 ? (row[col.blockers] || "").trim() : "",
-      quadrant: quadrantFromText(col.quadrant >= 0 ? row[col.quadrant] : "") || "q3",
+      quadrant: quadrantFromText(col.quadrant >= 0 ? row[col.quadrant] : "") || fallback,
     });
   }
   return out;
+}
+
+function tasksFromExcel(sheets) {
+  const out = [];
+  for (const sheet of sheets) {
+    const named = quadrantFromText(sheet.name);
+    out.push(...tasksFromTable(sheet.rows, { scanHeader: true, defaultQuadrant: named || "q3" }));
+  }
+  return out;
+}
+
+function excelErrorMessage(fileName, error) {
+  const code = error instanceof ExcelFormatError ? error.code : "";
+  if (code === "xlsb") return `「${fileName}」是 xlsb，请另存为 xlsx 后再上传`;
+  if (code === "encrypted") return `「${fileName}」已加密，请先取消密码再上传`;
+  if (code === "oldxls") return `「${fileName}」是更早的 xls，请另存为 xlsx 后再上传`;
+  if (code === "too-large") return `「${fileName}」解压后过大，未导入`;
+  return `无法读取「${fileName}」`;
 }
 
 function detectDelimiter(text) {
@@ -871,8 +928,10 @@ async function importFiles(fileList) {
   let parsed = [];
   let skipped = 0;
   let truncated = false;
+  let explained = 0;
   for (const file of files) {
-    if (!/\.(txt|csv|md|markdown)$/i.test(file.name)) {
+    const excel = isExcelName(file.name);
+    if (!excel && !/\.(txt|csv|md|markdown)$/i.test(file.name)) {
       skipped += 1;
       continue;
     }
@@ -881,10 +940,15 @@ async function importFiles(fileList) {
       continue;
     }
     try {
-      const text = await readFile(file);
-      parsed.push(...parseTaskFile(file.name, text));
-    } catch {
-      toast(`无法读取「${file.name}」`);
+      if (excel) parsed.push(...tasksFromExcel(await readExcelSheets(await file.arrayBuffer())));
+      else {
+        const text = await readFile(file);
+        parsed.push(...parseTaskFile(file.name, text));
+      }
+    } catch (error) {
+      console.error(error);
+      toast(excelErrorMessage(file.name, error));
+      explained += 1;
     }
   }
   if (parsed.length > 500) {
@@ -892,7 +956,7 @@ async function importFiles(fileList) {
     truncated = true;
   }
   if (!parsed.length) {
-    toast(skipped ? "请上传 txt、csv 或 md 文件" : "没有识别到任务。请确认一行一条，或 CSV 含有表头。");
+    if (!explained) toast(skipped ? "请上传 txt、csv、md 或 Excel 文件" : "没有识别到任务。请确认一行一条，或表格含有表头。");
     return;
   }
   const count = addTasks(parsed);
